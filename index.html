@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="fa">
+<head>
+  <meta charset="UTF-8">
+  <title>Word Masker App</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#ffe6cc">
+  <!-- favicon شفاف -->
+  <link rel="icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=">
+  <style>
+    body { /* حفظ شده */
+      font-family: sans-serif;
+      background-color: #ffe6cc;
+      margin: 0;
+      padding: 20px;
+    }
+    .editable-area {
+      width: 100%;
+      min-height: 100px;
+      border: 1px solid #aaa;
+      padding: 10px;
+      margin-bottom: 10px;
+      font-size: 16px;
+      border-radius: 5px;
+      background-color: #fff;
+      white-space: pre-wrap;
+      overflow-wrap: break-word;
+    }
+    .highlighted-word {
+      background-color: #ccff33;
+      border-radius: 4px;
+      padding: 0 2px;
+    }
+    input[type="text"] {
+      width: 100%;
+      margin-bottom: 10px;
+      font-size: 16px;
+      padding: 10px;
+      border-radius: 5px;
+      border: 1px solid #aaa;
+      box-sizing: border-box;
+    }
+    .controls {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    button {
+      padding: 8px 10px;
+      font-size: 14px;
+      cursor: pointer;
+      border-radius: 6px;
+      background-color: #99ccff;
+      border: none;
+    }
+    .word-row {
+      display: flex;
+      align-items: center;
+      background-color: rgba(230, 255, 150, 0.3);
+      margin-bottom: 5px;
+      padding: 5px;
+      border-radius: 4px;
+      flex-wrap: wrap;
+    }
+    .word-row.selected {
+      background-color: #ccff33;
+    }
+    .word-row input[type="number"] {
+      width: 40px;
+      margin-left: 5px;
+      text-align: center;
+    }
+    .word-row img {
+      width: 40px;
+      height: 40px;
+      object-fit: cover;
+      margin: 0 5px;
+      cursor: pointer;
+    }
+    .popup {
+      position: fixed;
+      top: 30%;
+      left: 10%;
+      width: 80%;
+      background: #fff;
+      border: 2px solid #ccc;
+      padding: 20px;
+      z-index: 10;
+      border-radius: 8px;
+    }
+    .popup.hidden {
+      display: none;
+    }
+    #popupContent {
+      display: flex;
+      flex-direction: row; /* عمودی به افقی */
+      gap: 5px;
+    }
+    .mask-button {
+      font-size: 20px;
+      margin: 0 3px;
+      width: 35px;
+      height: 35px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="app-container">
+    <div id="inputText" contenteditable="true" class="editable-area" spellcheck="false"></div>
+    <input type="text" id="searchBox" placeholder="🔍 Search word...">
+    <div class="controls">
+      <button onclick="displayWords()">🔄 Show Words</button>
+      <button id="maskToggle" onclick="toggleMask()">🔓 Mask Mode: OFF</button>
+      <button onclick="saveToStorage()">💾 ذخیره</button>
+    </div>
+    <div id="wordList"></div>
+
+    <!-- Mask popup -->
+    <div id="popup" class="popup hidden">
+      <div id="popupContent"></div>
+      <button onclick="closePopup()">Close</button>
+    </div>
+
+    <!-- Image options popup -->
+    <div id="imagePopup" class="popup hidden">
+      <h3 id="imagePopupTitle"></h3>
+      <div style="display: flex; justify-content: space-around; margin-top: 10px;">
+        <button onclick="viewImage()">👁 View</button>
+        <button onclick="uploadImage()">📤 Upload</button>
+      </div>
+      <!-- دکمه Back در نمایش تصویر -->
+      <button onclick="closeImagePopup()" style="margin-top: 10px;">← Back</button>
+    </div>
+  </div>
+
+  <script>
+    // Service Worker برای حالت آفلاین
+    if ('serviceWorker' in navigator) {
+      const swCode = `
+        const CACHE = 'v1';
+        const ASSETS = ['/', '/index.html'];
+        self.addEventListener('install', e =>
+          e.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS)))
+        );
+        self.addEventListener('fetch', e =>
+          e.respondWith(caches.match(e.request).then(r=>r||fetch(e.request)))
+        );
+      `;
+      const blob = new Blob([swCode], { type: 'text/javascript' });
+      navigator.serviceWorker.register(URL.createObjectURL(blob));
+    }
+
+    let maskedWords = {};
+    let wordImages = {};
+    let wordScores = {};
+    let selectedWord = '';
+    let maskMode = false;
+
+    function saveToStorage() {
+      localStorage.setItem("maskedWords", JSON.stringify(maskedWords));
+      localStorage.setItem("wordImages", JSON.stringify(wordImages));
+      localStorage.setItem("wordScores", JSON.stringify(wordScores));
+    }
+
+    function loadFromStorage() {
+      maskedWords = JSON.parse(localStorage.getItem("maskedWords") || "{}");
+      wordImages = JSON.parse(localStorage.getItem("wordImages") || "{}");
+      wordScores = JSON.parse(localStorage.getItem("wordScores") || "{}");
+      document.getElementById("inputText").innerText = Object.keys(maskedWords).join("\n");
+      displayWords();
+    }
+
+    function toggleMask() {
+      maskMode = !maskMode;
+      document.getElementById('maskToggle').textContent =
+        maskMode ? "🔒 Mask Mode: ON" : "🔓 Mask Mode: OFF";
+    }
+
+    function displayWords() {
+      const raw = document.getElementById("inputText").innerText;
+      const lines = [...new Set(raw.split("\n").map(w => w.trim()).filter(Boolean))]
+                      .sort((a,b)=>a.localeCompare(b));
+      const list = document.getElementById("wordList");
+      list.innerHTML = "";
+      lines.forEach(word => {
+        if (!maskedWords[word]) maskedWords[word] = word.split('');
+        if (!wordScores[word]) wordScores[word] = [0, 0];
+
+        const row = document.createElement("div");
+        row.className = "word-row";
+        row.dataset.word = word;
+
+        const btn = document.createElement("button");
+        btn.textContent = word;
+        btn.onclick = () => {
+          selectWord(word);
+          if (maskMode) openMaskPopup(word);
+        };
+
+        const img = document.createElement("img");
+        img.src = wordImages[word] || "https://via.placeholder.com/40";
+        img.onclick = () => openImageOptions(word);
+
+        const label = document.createElement("div");
+        label.innerHTML = `<strong>${maskedWords[word].join('')}</strong>`;
+        label.style.flex = "1";
+        label.style.padding = "0 10px";
+
+        const score1 = document.createElement("input");
+        score1.type = "number";
+        score1.value = wordScores[word][0];
+        score1.onchange = () => { wordScores[word][0] = +score1.value; saveToStorage(); };
+
+        const score2 = document.createElement("input");
+        score2.type = "number";
+        score2.value = wordScores[word][1];
+        score2.onchange = () => { wordScores[word][1] = +score2.value; saveToStorage(); };
+
+        row.append(btn, img, label, score1, score2);
+        list.appendChild(row);
+      });
+      filterWords();
+    }
+
+    function selectWord(word) {
+      document.querySelectorAll(".word-row")
+        .forEach(r => r.classList.toggle("selected", r.dataset.word === word));
+      const div = document.getElementById("inputText");
+      const html = div.innerText.split("\n")
+        .map(line => line.trim()===word
+                      ? `<span class="highlighted-word">${line}</span>`
+                      : line)
+        .join("<br>");
+      div.innerHTML = html;
+    }
+
+    function filterWords() {
+      const q = document.getElementById("searchBox").value.toLowerCase();
+      document.querySelectorAll(".word-row")
+        .forEach(r => r.style.display = r.dataset.word.toLowerCase().includes(q) ? "flex":"none");
+    }
+
+    function openMaskPopup(word) {
+      const p = document.getElementById("popup");
+      const c = document.getElementById("popupContent");
+      c.innerHTML = "";
+      maskedWords[word].forEach((ch,i) => {
+        const b = document.createElement("button");
+        b.textContent = ch;
+        b.className = "mask-button";
+        b.onclick = () => {
+          const orig = word.split('');
+          maskedWords[word][i] = maskedWords[word][i]==='*'?orig[i]:'*';
+          displayWords(); saveToStorage();
+        };
+        c.appendChild(b);
+      });
+      p.classList.remove("hidden");
+    }
+
+    function closePopup() {
+      document.getElementById("popup").classList.add("hidden");
+    }
+
+    let curImg = "";
+    function openImageOptions(word) {
+      curImg = word;
+      document.getElementById("imagePopupTitle").innerText = `Image Options for "${word}"`;
+      document.getElementById("imagePopup").classList.remove("hidden");
+    }
+    function viewImage() {
+      const im = new Image();
+      im.src = wordImages[curImg] || "https://via.placeholder.com/300";
+      im.style.width="100%";
+      window.open("").document.write(im.outerHTML);
+    }
+    function uploadImage() {
+      const inp = document.createElement("input");
+      inp.type="file"; inp.accept="image/*";
+      inp.onchange = e => {
+        const f = e.target.files[0];
+        if (!f) return;
+        const r = new FileReader();
+        r.onload = ev => {
+          wordImages[curImg] = ev.target.result;
+          displayWords(); saveToStorage(); closeImagePopup();
+        };
+        r.readAsDataURL(f);
+      };
+      inp.click();
+    }
+    function closeImagePopup() {
+      document.getElementById("imagePopup").classList.add("hidden");
+    }
+
+    document.addEventListener("DOMContentLoaded", () => {
+      document.getElementById("searchBox").addEventListener("input", filterWords);
+      loadFromStorage();
+    });
+  </script>
+</body>
+</html>
